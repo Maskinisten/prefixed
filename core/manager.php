@@ -298,8 +298,8 @@ class manager
 			return 0;
 		}
 
-		$a_ordered = (int) is_array($a) ? $a['ordered'] : $a->get('ordered');
-		$b_ordered = (int) is_array($b) ? $b['ordered'] : $b->get('ordered');
+		$a_ordered = (int) is_array($a) ? (isset($a['ordered']) ? $a['ordered'] : 0) : $a->get('ordered');
+		$b_ordered = (int) is_array($b) ? (isset($b['ordered']) ? $b['ordered'] : 0) : $b->get('ordered');
 		return $a_ordered === $b_ordered ? 0 : ($a_ordered > $b_ordered ? 1 : -1);
 	}
 
@@ -390,6 +390,7 @@ class manager
 		// we are removing all of them
 		else if (empty($prefix_ids) && !empty($this_topics_prefixes))
 		{
+		
 			// 0 for the second parameter means ALL
 			// Otherwise, you can give an array or a single prefix ID
 			// to remove.
@@ -400,6 +401,7 @@ class manager
 		// not empty, we're adding all of them
 		else if (!empty($prefix_ids) && empty($this_topics_prefixes))
 		{
+		
 			foreach ($prefix_ids as $prefix_id)
 			{
 				$this->add_topic_prefix($topic_id, $prefix_id, $forum_id);
@@ -550,45 +552,87 @@ class manager
 	/**
 	 * Generate template for the posting form
 	 *
+	 * @var int		$post_id		ID of the post
 	 * @var int		$forum_id		ID of the forum
 	 * @var int		$topic_id		ID of the topic
 	 * @return null
 	 */
-	public function generate_posting_form($post_id = 0)
+	public function generate_posting_form($post_id = 0, $topic_id = 0, $forum_id = 0)
 	{
-		if (!$post_id)
-		{
-			return;
-		}
-
-		// Get some information from the database
-		$sql = 'SELECT t.topic_first_post_id, t.forum_id, t.topic_id
-			FROM ' . TOPICS_TABLE . ' t, ' . POSTS_TABLE . ' p
-			WHERE p.post_id = ' . (int) $post_id . '
-				AND t.topic_id = p.topic_id';
-		$result = $this->db->sql_query($sql);
-		$row = $this->db->sql_fetchrow($result);
-		$this->db->sql_freeresult($result);
-
-		// Only edit the first post of the topic
-		if ((int) $row['topic_first_post_id'] !==  (int) $post_id)
-		{
-			return;
-		}
-		$topic_id = $row['topic_id'];
-		$forum_id = $row['forum_id'];
-
+		$prefix_instances = $this->prefix_instances;
 		$topic_prefixes_used = [];
-
-		// We want to sort the prefixes by the 'ordered' property, and we can do that with our custom sort function
-		usort($this->prefix_instances, [$this, 'sort_topic_prefixes']);
-		if ($this->prefix_instances)
+		// When we have a post ID, we're editing a post and we need to make
+		// sure we're editing the first post in the topic
+		// Otherwise, it's a new topic so we only care about the forum ID
+		if ($post_id)
 		{
-			foreach ($this->prefix_instances as $instance)
-			{
-				if ((int) $instance['topic'] === (int) $topic_id)
+			// If the topic or forum ID aren't provided, grab them from the DB
+			if (!$topic_id || !$forum_id) {
+				$sql = 'SELECT t.topic_first_post_id, t.forum_id, t.topic_id
+					FROM ' . TOPICS_TABLE . ' t, ' . POSTS_TABLE . ' p
+					WHERE p.post_id = ' . (int) $post_id . '
+						AND t.topic_id = p.topic_id';
+				$result = $this->db->sql_query($sql);
+				$row = $this->db->sql_fetchrow($result);
+				$this->db->sql_freeresult($result);
+
+				// Only edit the first post of the topic
+				if ((int) $row['topic_first_post_id'] !==  (int) $post_id)
 				{
-					$topic_prefixes_used[] = $instance['prefix'];
+					return;
+				}
+				$topic_id = $row['topic_id'];
+				$forum_id = $row['forum_id'];
+			}
+
+			if (!empty($prefix_instances))
+			{
+				foreach ($prefix_instances as $instance)
+				{
+					if ((int) $instance['topic'] === (int) $topic_id)
+					{
+						$topic_prefixes_used[] = $instance['prefix'];
+					}
+				}
+			}
+		}
+		else
+		{
+			// In this case, we're posting a new topic.
+			// We rely on a $forum_id to be provided. Of course phpBB itself
+			// does as well but we can still get out of here in this scenario
+			if (!$forum_id)
+			{
+				return;
+			}
+
+			// The following code is borrowed/adapted from event/listener.php
+			// in the method manage_prefixes_on_posting()
+			// Check there for relevant comments if you need info about how
+			// to mess with this stuff.
+			$ids = $this->request->variable('prefixes_used', '');
+			if (!empty($ids))
+			{
+				preg_match_all('/(prefix\[\]=(\d)+&?)+/', $ids, $prefix_ids);
+				$ids = $prefix_ids[2];
+			}
+
+			if (empty($ids))
+			{
+				$prefix_instances = [];
+			}
+			else
+			{
+				$order = 0;
+				foreach ($ids as $id)
+				{
+					$order++;
+					$prefix_instances[] = [
+						'prefix' => $id,
+						'id' => $id,
+						'ordered' => $order,
+					];
+					$topic_prefixes_used[] = $id;
 				}
 			}
 		}
@@ -597,7 +641,8 @@ class manager
 
 		// We have to go by instance instead of prefix so we are going in
 		// the right order
-		foreach ($this->prefix_instances as $instance_ary)
+		usort($prefix_instances, [$this, 'sort_topic_prefixes']);
+		foreach ($prefix_instances as $instance_ary)
 		{
 			foreach ($this->prefixes as $prefix)
 			{
@@ -609,7 +654,7 @@ class manager
 			}
 			if ($prefix !== null && in_array($prefix['id'], $allowed_prefixes) && in_array($prefix['id'], $topic_prefixes_used))
 			{
-				$this->get_instance($instance_ary['id'])->parse('prefix_used');
+				$this->get_instance($instance_ary['id'], !empty($post_id), ($instance_ary['ordered'] ? $instance_ary['ordered'] : false))->parse('prefix_used');
 			}
 		}
 
@@ -679,11 +724,25 @@ class manager
 	/**
 	 * Get a prefix instance object for the given instance ID
 	 *
+	 * @param int $id ID of the instance (if the second paramter is true)
+	 *				or prefix (if the second parameter is false)
+	 * @param bool $is_instance If true, it is an existing instance. Otherwise
+	 *				the ID we've been given is a prefix ID and we need a
+	 *				temporary or new instance based on that prefix
+	 * @param int|bool $order Mainly for use with already-existent 
 	 * @return instance
 	 */
-	public function get_instance($instance_id)
+	public function get_instance($id, $is_instance = true, $order = false)
 	{
-		return new instance($this->db, $this->cache, $this->template, $this->tokens, $instance_id);
+		$instance_id = $is_instance ? $id : 0;
+		$instance = new instance($this->db, $this->cache, $this->template, $this->tokens, $instance_id);
+		if (!$is_instance) {
+			$instance['prefix'] = $id;
+			$instance['token_data'] = '';
+			$instance['ordered'] = $order !== false ? $order : 0;
+		}
+
+		return $instance;
 	}
 
 	/**

@@ -74,6 +74,16 @@ class listener implements EventSubscriberInterface
 	protected $setup_has_been_run = false;
 
 	/**
+	 * See the explanation near the end of manage_prefixes_on_posting()
+	 * This variable holds an array with an array of prefix IDs to be
+	 * applied and the forum ID, which are passed directly into
+	 * manager::set_topic_prefixes() along with the latest topic ID from
+	 * the current user.
+	 * @var array
+	 */
+	protected $prefix_queue = [];
+
+	/**
 	 * Get subscribed events
 	 *
 	 * @return array
@@ -88,7 +98,10 @@ class listener implements EventSubscriberInterface
 			'core.viewtopic_modify_page_title'	=> 'get_viewtopic_topic_prefix',
 			'core.viewforum_modify_topicrow'	=> 'get_viewforum_topic_prefixes',
 			'core.modify_posting_parameters'	=> 'manage_prefixes_on_posting',
-			'core.posting_modify_template_vars'	=> 'generate_posting_form',
+			'core.posting_modify_template_vars'	=> [
+				'generate_posting_form',
+				'handle_prefix_queue',
+			],
 
 			// Events added by this extension
 			'prefixed.modify_prefix_title'		=> 'get_token_data',
@@ -149,12 +162,46 @@ class listener implements EventSubscriberInterface
 	/**
 	 * Get the form things for the posting form
 	 *
-	 * @return Event $event Event object
+	 * @param Event $event Event object
+	 * @return null
 	 */
 	public function generate_posting_form($event)
 	{
 		$this->user->add_lang_ext('imkingdavid/prefixed', 'prefixed');
-		$this->manager->generate_posting_form($this->request->variable('p', 0));
+		$this->manager->generate_posting_form($this->request->variable('p', 0), $this->request->variable('t', 0), $this->request->variable('f', 0));
+	}
+
+	/**
+	 * Handle the prefix setting for new topics. See the explanation near the
+	 * end of manage_prefixes_on_posting()
+	 *
+	 * @param Event $event Event object
+	 * @return null
+	 */
+	public function handle_prefix_queue($event)
+	{
+		var_dump('test');
+		$prefix_queue = $this->request->variable('prefix_queue', '');
+		if (sizeof($prefix_queue))
+		{
+			$prefix_queue = json_decode($prefix_queue);
+			var_dump($this->prefix_queue);
+			$sql = 'SELECT topic_id
+				FROM ' . TOPICS_TABLE . '
+				WHERE poster_id = ' . (int) $user->data['user_id'] . '
+				ORDER BY topic_posted_date DESC';
+			$result = $this->db->sql_query($sql);
+			$topic_id = $this->db->sql_fetchfield('topic_id');
+			$this->db->sql_freeresult();
+
+			if (!$topic_id)
+			{
+				return;
+			}
+
+			$this->manager->set_topic_prefixes($topic_id, $this->prefix_queue[0], $this->prefix_queue[1]);
+			$this->prefix_queue = [];
+		}
 	}
 
 	/**
@@ -165,6 +212,11 @@ class listener implements EventSubscriberInterface
 	 */
 	public function manage_prefixes_on_posting($event)
 	{
+		if (!empty($event['error']))
+		{
+			return;
+		}
+
 		if (!defined('PREFIXES_TABLE'))
 		{
 			$this->setup($event);
@@ -174,13 +226,13 @@ class listener implements EventSubscriberInterface
 		// be a string like: 'prefix[]=4'
 		// I need to extract just the number
 		$ids = $this->request->variable('prefixes_used', '');
-
-		if (!$event['submit'])
+		if (!$event['submit'] || $event['refresh'])
 		{
 			return;
 		}
 
-		if (!empty($ids)) {
+		if (!empty($ids))
+		{
 			// If we have no matches, get out!
 			// Note that preg_match_all() returns false on failure
 			// or the number of matches on success
@@ -238,7 +290,27 @@ class listener implements EventSubscriberInterface
 			}
 		}
 
-		$this->manager->set_topic_prefixes($topic_id, $ids, $forum_id);
+		// The placement of this event in posting.php (at the top) means
+		// that when we're posting a new topic, we aren't able to know or
+		// figure out the ID of the topic in time to set the prefixes.
+		// We'd need an similar event after submit_post() that also has
+		// the topic ID.
+
+		// Assuming this listener object instance is shared (i.e. not
+		// re-instantiated for every event) I can create a queue parameter
+		// to hold the ids and then in generate_posting_form(), which listens
+		// for modify_posting_template_vars and so is after submit_post(), I
+		// can execute the queue.
+
+		// Definitely not elegant, but it should work for the time being.
+		if ($topic_id)
+		{
+			$this->manager->set_topic_prefixes($topic_id, $ids, $forum_id);
+		}
+		else
+		{
+			$this->prefix_queue = [$ids, $forum_id];
+		}
 	}
 
 	/**

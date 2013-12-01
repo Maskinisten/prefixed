@@ -112,17 +112,20 @@ class instance extends \ArrayObject
 			return '';
 		}
 
-		foreach (json_decode($this['token_data'], true) as $data)
-		{
-			// If a token was used and is no longer available
-			// we skip parsing it. It will show up ugly in the prefix
-			// but that's not my fault.
-			if (!isset($this->tokens[$data['service']]))
+		$token_data = json_decode($this['token_data'], true);
+		if ($token_data) {
+			foreach ($token_data as $data)
 			{
-				continue;
-			}
+				// If a token was used and is no longer available
+				// we skip parsing it. It will show up ugly in the prefix
+				// but that's not my fault.
+				if (!isset($this->tokens[$data['service']]))
+				{
+					continue;
+				}
 
-			$this->prefix_object['title'] = $this->tokens[$data['service']]->apply_token_data($this->prefix_object['title'], $data['data']);
+				$this->prefix_object['title'] = $this->tokens[$data['service']]->apply_token_data($this->prefix_object['title'], $data['data']);
+			}
 		}
 
 		// To clarify, the second argument here is simply replacing the prefix
